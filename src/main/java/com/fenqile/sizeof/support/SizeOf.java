@@ -4,6 +4,8 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 使用当前API方式:
@@ -41,18 +43,56 @@ public class SizeOf extends AbstractSizable {
     @Override
     protected long doSizeOf(Object object){
 
-        IdentityHashMap<Object, Object> visited = new IdentityHashMap<>();
-        Deque<Object> analysing = new LinkedList<>();
+        final IdentityHashMap<Object, Object> visited = new IdentityHashMap<>();
+        final LinkedBlockingDeque<Holder> analysing = new LinkedBlockingDeque<>();
 
-        long size = sizeOf(object, visited, analysing);
-        while (!analysing.isEmpty()){
-            size += sizeOf(analysing.pollFirst(), visited, analysing);
+        ExecutorService executor = Executors.newCachedThreadPool(new ThreadFactory() {
+            AtomicLong ID = new AtomicLong();
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread run = new Thread(r, "sizof-thread-" + ID.getAndIncrement());
+                return run;
+            }
+        });
+
+        final AtomicLong count = new AtomicLong(0);
+        final AtomicLong sized = new AtomicLong(0);
+
+        BlockingQueue<Future<Holder>> futures = new LinkedBlockingQueue<>();
+        long length = 0;
+        try{
+            sized.set(sizeOf(object, visited, analysing, count));
+            while ( count.get() > 0 ){
+                final Holder item = analysing.takeFirst();
+                count.decrementAndGet();
+                length++;
+                Future<Holder> future = executor.submit(new Callable<Holder>() {
+                    @Override
+                    public Holder call() throws Exception {
+                        try {
+                            long size = sizeOf(item.object, visited, analysing, count);
+                            sized.getAndAdd(size);
+                        } catch (InterruptedException e) {
+
+                        }
+                        return item;
+                    }
+                });
+                futures.add(future);
+            }
+
+            for(; length > 0 && futures.take() != null; length--);
+
+        }catch (InterruptedException e){
+
+        }finally {
+            executor.shutdown();
         }
 
-        return size;
+        return sized.get();
     }
 
-    private long sizeOf(Object object, Map<Object, Object> visited, Deque analysing){
+    private long sizeOf(Object object, Map<Object, Object> visited, BlockingDeque analysing, AtomicLong count) throws InterruptedException {
 
         if(object == null || shouldSkip(object, visited)){
             return 0;
@@ -64,14 +104,15 @@ public class SizeOf extends AbstractSizable {
         long size = instrumentation.getObjectSize(object);
 
         Class<?> parent = object.getClass();
-        while (parent != null) {
+        while (parent != null && parent != Object.class) {
 
             // recursive analysis array elements
             if(parent.isArray()){
                 if(parent.getName().length() != 2){
                     int length = Array.getLength(object);
                     for(int i = 0; i < length; i++){
-                        analysing.push(Array.get(object, i));
+                        analysing.putLast(new Holder(Array.get(object, i), -1L));
+                        count.getAndIncrement();
                     }
                 }
                 return size;
@@ -81,10 +122,13 @@ public class SizeOf extends AbstractSizable {
             if(Map.class.isAssignableFrom(parent)){
                 Map<Object, Object> pairs = (Map<Object, Object>)object;
                 for(Map.Entry<Object, Object> pair : pairs.entrySet()){
-                    analysing.push(pair);
+                    analysing.putLast(new Holder(pair, -1L));
+                    count.getAndIncrement();
                 }
                 return size;
             }
+
+            long start = System.currentTimeMillis();
 
             Field[] fields = parent.getDeclaredFields();
             for(int i = 0; i < fields.length; i++){
@@ -100,7 +144,8 @@ public class SizeOf extends AbstractSizable {
                         }
                         Object added = field.get(object);
                         if(added != null) {
-                            analysing.push(added);
+                            analysing.putLast(new Holder(added, -1L));
+                            count.getAndIncrement();
                         }
                     } catch (IllegalAccessException e) {
                         // ignore
@@ -109,6 +154,8 @@ public class SizeOf extends AbstractSizable {
                     }
                 }
             }
+
+//            System.out.println("枚举字段耗时：" + parent.getName() + " :" + (System.currentTimeMillis() - start));
 
             parent = parent.getSuperclass();
 
@@ -125,5 +172,24 @@ public class SizeOf extends AbstractSizable {
             }
         }
         return visited.containsKey(object);
+    }
+
+    private static class Guard {
+
+    }
+
+    private static class Holder{
+
+        public Holder(Object object){
+            this.object = object;
+        }
+
+        public Holder(Object object, long size){
+            this.object = object;
+            this.size = size;
+        }
+
+        volatile long size;
+        Object object;
     }
 }
