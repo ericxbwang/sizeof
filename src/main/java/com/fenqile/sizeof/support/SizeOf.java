@@ -81,11 +81,13 @@ public class SizeOf extends AbstractSizable {
                 futures.add(future);
             }
 
-            for(; length > 0 && futures.take() != null; length--);
+            for(Future<Holder> future; length > 0 && (future = futures.take()) != null; future.get(), length--);
 
         }catch (InterruptedException e){
 
-        }finally {
+        } catch (ExecutionException e) {
+
+        } finally {
             executor.shutdown();
         }
 
