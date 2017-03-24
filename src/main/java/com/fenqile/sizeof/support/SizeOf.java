@@ -44,57 +44,44 @@ public class SizeOf extends AbstractSizable {
     protected long doSizeOf(Object object){
 
         final IdentityHashMap<Object, Object> visited = new IdentityHashMap<>();
-        final LinkedBlockingDeque<Holder> analysing = new LinkedBlockingDeque<>();
+        final LinkedBlockingDeque<Object> analysing = new LinkedBlockingDeque<>();
 
-        ExecutorService executor = Executors.newCachedThreadPool(new ThreadFactory() {
-            AtomicLong ID = new AtomicLong();
-            @Override
-            public Thread newThread(Runnable r) {
-                Thread run = new Thread(r, "sizof-thread-" + ID.getAndIncrement());
-                return run;
-            }
+        final ThreadPoolExecutor executor = new ThreadPoolExecutor(2, Runtime.getRuntime().availableProcessors() * 2,
+                0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<Runnable>(),
+                new ThreadFactory() {
+                    AtomicLong ID = new AtomicLong();
+                    @Override
+                    public Thread newThread(Runnable r) {
+                        Thread run = new Thread(r, "sizof-thread-" + ID.getAndIncrement());
+                        return run;
+                    }
         });
+
 
         final AtomicLong count = new AtomicLong(0);
         final AtomicLong sized = new AtomicLong(0);
 
-        BlockingQueue<Future<Holder>> futures = new LinkedBlockingQueue<>();
-        long length = 0;
         try{
-            sized.set(sizeOf(object, visited, analysing, count));
-            while ( count.get() > 0 ){
-                final Holder item = analysing.takeFirst();
-                count.decrementAndGet();
-                length++;
-                Future<Holder> future = executor.submit(new Callable<Holder>() {
-                    @Override
-                    public Holder call() throws Exception {
-                        try {
-                            long size = sizeOf(item.object, visited, analysing, count);
-                            sized.getAndAdd(size);
-                        } catch (InterruptedException e) {
+            sized.set(sizeOf(object, visited, analysing, count, sized, executor));
+//            while ( count.get() > 0){
+//                final Holder item = analysing.takeFirst();
+//                count.decrementAndGet();
+//                executor.submit(new AnalysisTask(item.object, visited, analysing, count, sized, executor));
+//            }
 
-                        }
-                        return item;
-                    }
-                });
-                futures.add(future);
-            }
-
-            for(Future<Holder> future; length > 0 && (future = futures.take()) != null; future.get(), length--);
+            while (!executor.getQueue().isEmpty() && executor.getActiveCount() > 0);
 
         }catch (InterruptedException e){
 
-        } catch (ExecutionException e) {
-
-        } finally {
+        }finally {
             executor.shutdown();
         }
 
         return sized.get();
     }
 
-    private long sizeOf(Object object, Map<Object, Object> visited, BlockingDeque analysing, AtomicLong count) throws InterruptedException {
+    private long sizeOf(Object object, Map<Object, Object> visited, BlockingDeque analysing, AtomicLong count, AtomicLong sized, ThreadPoolExecutor executor) throws InterruptedException {
 
         if(object == null || shouldSkip(object, visited)){
             return 0;
@@ -113,7 +100,8 @@ public class SizeOf extends AbstractSizable {
                 if(parent.getName().length() != 2){
                     int length = Array.getLength(object);
                     for(int i = 0; i < length; i++){
-                        analysing.putLast(new Holder(Array.get(object, i), -1L));
+//                        analysing.putLast(new Holder(Array.get(object, i), -1L));
+                        executor.submit(new AnalysisTask(Array.get(object, i), visited, analysing, count, sized, executor));
                         count.getAndIncrement();
                     }
                 }
@@ -124,7 +112,8 @@ public class SizeOf extends AbstractSizable {
             if(Map.class.isAssignableFrom(parent)){
                 Map<Object, Object> pairs = (Map<Object, Object>)object;
                 for(Map.Entry<Object, Object> pair : pairs.entrySet()){
-                    analysing.putLast(new Holder(pair, -1L));
+//                    analysing.putLast(new Holder(pair, -1L));
+                    executor.submit(new AnalysisTask(pair, visited, analysing, count, sized, executor));
                     count.getAndIncrement();
                 }
                 return size;
@@ -146,7 +135,8 @@ public class SizeOf extends AbstractSizable {
                         }
                         Object added = field.get(object);
                         if(added != null) {
-                            analysing.putLast(new Holder(added, -1L));
+//                            analysing.putLast(new Holder(added, -1L));
+                            executor.submit(new AnalysisTask(added, visited, analysing, count, sized, executor));
                             count.getAndIncrement();
                         }
                     } catch (IllegalAccessException e) {
@@ -176,22 +166,47 @@ public class SizeOf extends AbstractSizable {
         return visited.containsKey(object);
     }
 
-    private static class Guard {
+    private class AnalysisTask implements Runnable{
 
-    }
+        private Object object;
+        private Map<Object, Object> visited;
+        private BlockingDeque analysing;
+        private AtomicLong count;
+        private AtomicLong sized;
+        private ThreadPoolExecutor executor;
 
-    private static class Holder{
-
-        public Holder(Object object){
+        public AnalysisTask(Object object, Map<Object, Object> visited, BlockingDeque analysing, AtomicLong count,  AtomicLong sized, ThreadPoolExecutor executor){
             this.object = object;
+            this.visited = visited;
+            this.analysing = analysing;
+            this.count = count;
+            this.sized = sized;
+            this.executor = executor;
         }
 
-        public Holder(Object object, long size){
-            this.object = object;
-            this.size = size;
+        @Override
+        public void run() {
+            long size = 0;
+            try {
+                size = sizeOf(object, visited, analysing, count, sized, executor);
+            } catch (InterruptedException e) {
+            }
+            sized.getAndAdd(size);
         }
-
-        volatile long size;
-        Object object;
     }
+
+//    private static class Holder{
+//
+//        public Holder(Object object){
+//            this.object = object;
+//        }
+//
+//        public Holder(Object object, long size){
+//            this.object = object;
+//            this.size = size;
+//        }
+//
+//        volatile long size;
+//        Object object;
+//    }
 }

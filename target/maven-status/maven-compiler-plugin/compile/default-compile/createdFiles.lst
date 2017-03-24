@@ -1,5 +1,5 @@
-com\fenqile\sizeof\support\SizeOf$2.class
-com\fenqile\sizeof\support\SizeOf.class
 com\fenqile\sizeof\support\SizeOfTool.class
+com\fenqile\sizeof\support\SizeOf.class
 com\fenqile\sizeof\support\AbstractSizable.class
+com\fenqile\sizeof\support\SizeOf$AnalysisTask.class
 com\fenqile\sizeof\Sizeable.class
