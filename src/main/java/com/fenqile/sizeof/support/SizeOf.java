@@ -70,7 +70,7 @@ public class SizeOf extends AbstractSizable {
 //                executor.submit(new AnalysisTask(item.object, visited, analysing, count, sized, executor));
 //            }
 
-            while (!executor.getQueue().isEmpty() && executor.getActiveCount() > 0);
+            while (!executor.getQueue().isEmpty() || executor.getActiveCount() > 0);
 
         }catch (InterruptedException e){
 
